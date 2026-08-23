@@ -1,0 +1,8 @@
+export enum GuideCategory {
+  FLOOD = 'FLOOD',
+  HEALTH = 'HEALTH',
+  MOSQUITO = 'MOSQUITO',
+  MOBILITY = 'MOBILITY',
+  EMERGENCY = 'EMERGENCY',
+  GENERAL = 'GENERAL',
+}
