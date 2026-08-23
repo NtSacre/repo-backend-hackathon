@@ -8,12 +8,14 @@ import { UsersModule } from '../users/users.module';
 import { OtpCode } from './entities/otp-code.entity';
 import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './strategies/jwt.strategy';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
   imports: [
     UsersModule,
     TypeOrmModule.forFeature([OtpCode]),
     PassportModule,
+    MailModule, // ← ajoute ça
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

@@ -3,11 +3,11 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { UsersService } from '../users/users.service';
+import { MailService } from '../mail/mail.service';
 import { OtpCode } from './entities/otp-code.entity';
-import { RegisterRequestDto } from './dto/register-request.dto';
+import { RegisterRequestDto, OtpChannel } from './dto/register-request.dto';
 import { LoginRequestDto } from './dto/login-request.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
-import { User } from '../users/entities/user.entity';
 
 @Injectable()
 export class AuthService {
@@ -16,6 +16,7 @@ export class AuthService {
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
+    private readonly mailService: MailService,
     @InjectRepository(OtpCode)
     private readonly otpRepository: Repository<OtpCode>,
   ) {}
@@ -24,61 +25,85 @@ export class AuthService {
     return Math.floor(1000 + Math.random() * 9000).toString(); // 4 digit OTP
   }
 
+  private async dispatchOtp(channel: OtpChannel, code: string, phone: string, email?: string) {
+    if (channel === OtpChannel.EMAIL) {
+      if (!email) {
+        throw new BadRequestException('Un email est requis pour ce canal');
+      }
+      await this.mailService.sendOtpEmail(email, code);
+    } else {
+      // WhatsApp pas encore branché : mock en attendant le service
+      this.logger.log(`[MOCK OTP SENDER] Sending OTP ${code} to ${phone} via ${channel}`);
+    }
+  }
+
+  private async createAndSendOtp(userId: string, channel: OtpChannel, phone: string, email?: string) {
+    const code = this.generateOtp();
+    const expiresAt = new Date();
+    expiresAt.setMinutes(expiresAt.getMinutes() + 10); // OTP valide 10 minutes
+
+    const otpRecord = this.otpRepository.create({
+      identifier: userId, // on stocke l'id user, comme en Laravel (user_id)
+      code,
+      channel,
+      expiresAt,
+    });
+    await this.otpRepository.save(otpRecord);
+
+    await this.dispatchOtp(channel, code, phone, email);
+  }
+
+  /**
+   * Register - Étape 1 : créer l'utilisateur immédiatement, puis envoyer l'OTP
+   * (équivalent du AuthService::register() en Laravel)
+   */
   async requestRegistrationOtp(registerDto: RegisterRequestDto) {
     const existingUser = await this.usersService.findByPhone(registerDto.phone);
     if (existingUser) {
       throw new BadRequestException('User with this phone number already exists');
     }
-    
-    const code = this.generateOtp();
-    const expiresAt = new Date();
-    expiresAt.setMinutes(expiresAt.getMinutes() + 10); // OTP valid for 10 minutes
 
-    const otpRecord = this.otpRepository.create({
-      identifier: registerDto.phone,
-      code,
-      channel: registerDto.channel,
-      expiresAt,
+    const user = await this.usersService.create({
+      fullName: registerDto.fullName,
+      phone: registerDto.phone,
+      email: registerDto.email,
     });
-    
-    await this.otpRepository.save(otpRecord);
 
-    // Mock sending OTP
-    this.logger.log(`[MOCK OTP SENDER] Sending OTP ${code} to ${registerDto.phone} via ${registerDto.channel}`);
+    await this.createAndSendOtp(user.id.toString(), registerDto.channel, registerDto.phone, registerDto.email);
 
-    return { message: 'OTP sent successfully (Check server logs for MVP)' };
+    return {
+      message: 'OTP sent successfully',
+      userId: user.id,
+    };
   }
 
+  /**
+   * Login - Étape 1 : retrouver l'utilisateur, envoyer l'OTP
+   * (équivalent du AuthService::login() en Laravel)
+   */
   async requestLoginOtp(loginDto: LoginRequestDto) {
     const user = await this.usersService.findByPhone(loginDto.phone);
     if (!user) {
       throw new BadRequestException('User not found');
     }
 
-    const code = this.generateOtp();
-    const expiresAt = new Date();
-    expiresAt.setMinutes(expiresAt.getMinutes() + 10); // OTP valid for 10 minutes
+    await this.createAndSendOtp(user.id.toString(), loginDto.channel, loginDto.phone, user.email);
 
-    const otpRecord = this.otpRepository.create({
-      identifier: loginDto.phone,
-      code,
-      channel: loginDto.channel,
-      expiresAt,
-    });
-
-    await this.otpRepository.save(otpRecord);
-
-    // Mock sending OTP
-    this.logger.log(`[MOCK OTP SENDER] Sending OTP ${code} to ${loginDto.phone} via ${loginDto.channel}`);
-
-    return { message: 'OTP sent successfully (Check server logs for MVP)' };
+    return {
+      message: 'OTP sent successfully',
+      userId: user.id,
+    };
   }
 
-  async verifyOtp(verifyDto: VerifyOtpDto, userDataForRegistration?: RegisterRequestDto) {
-    const { identifier, code } = verifyDto;
-    
+  /**
+   * Étape 2 : vérifier l'OTP avec juste userId + code
+   * (équivalent du AuthService::verifyOtp() en Laravel)
+   */
+  async verifyOtp(verifyDto: VerifyOtpDto) {
+    const { userId, code } = verifyDto;
+
     const otpRecord = await this.otpRepository.findOne({
-      where: { identifier },
+      where: { identifier: userId },
       order: { createdAt: 'DESC' },
     });
 
@@ -94,25 +119,15 @@ export class AuthService {
       throw new UnauthorizedException('OTP expired');
     }
 
-    // OTP is valid. Now either log the user in or create them.
-    let user = await this.usersService.findByPhone(identifier);
-
+    const user = await this.usersService.findById(userId);
     if (!user) {
-      // Registration flow
-      if (!userDataForRegistration) {
-        throw new BadRequestException('User details missing for registration');
-      }
-      user = await this.usersService.create({
-        fullName: userDataForRegistration.fullName,
-        phone: userDataForRegistration.phone,
-        email: userDataForRegistration.email,
-      });
+      throw new BadRequestException('User not found');
     }
 
-    // Delete used OTP
+    // Supprime l'OTP utilisé
     await this.otpRepository.remove(otpRecord);
 
-    // Generate JWT token
+    // Génère le JWT
     const payload = { sub: user.id, role: user.role };
     const accessToken = this.jwtService.sign(payload);
 

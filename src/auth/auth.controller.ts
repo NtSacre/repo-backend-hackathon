@@ -3,7 +3,8 @@ import { AuthService } from './auth.service';
 import { RegisterRequestDto } from './dto/register-request.dto';
 import { LoginRequestDto } from './dto/login-request.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
-import { AuthGuard } from '@nestjs/passport';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+
 
 @Controller('auth')
 export class AuthController {
@@ -20,17 +21,21 @@ export class AuthController {
   }
 
   @Post('verify')
-  async verifyOtp(@Body() body: { verifyDto: VerifyOtpDto, userData?: RegisterRequestDto }) {
-    // If it's a registration, the frontend should send userData along with verifyDto.
-    // In a real app, userData could be cached on the server temporarily instead of sent back from the frontend.
-    return this.authService.verifyOtp(body.verifyDto, body.userData);
+  async verifyOtp(@Body() verifyDto: VerifyOtpDto) {
+    return this.authService.verifyOtp(verifyDto);
   }
 
-  // To secure endpoints, we need a JwtAuthGuard, which I will implement.
-  // For now, this is a placeholder for GET /auth/me
-  // @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard)
   @Get('me')
   getProfile(@Request() req: any) {
     return req.user;
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('logout')
+  logout() {
+    // JWT stateless : rien à invalider côté serveur.
+    // Le frontend doit supprimer le token stocké (localStorage / mémoire / cookie).
+    return { message: 'Déconnexion réussie' };
   }
 }
